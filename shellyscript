@@ -1,0 +1,112 @@
+/**
+ * SHELLY ALAPOHJATUULETUS - TUOTANTOVERSIO V3
+ * Mukana: Kastepiste, hystereesi, 5min suojaviive, RSSI ja Akku-prosentit.
+ */
+
+// --- ASETUKSET ---
+let SENSORS = {
+    "aa:bb:cc:dd:ee:ff": "ALAPOHJA",
+    "11:22:33:44:55:66": "ULKO"
+};
+
+let SWITCH_ID = 0;
+let HUM_LIMIT = 70.0;
+let HYSTERESIS = 5.0;
+let DEW_MARGIN = 1.0;
+let MIN_SWITCH_TICKS = 5;
+
+let history = { "aa:bb:cc:dd:ee:ff": [], "11:22:33:44:55:66": [] };
+let lastSwitchTick = -100;
+let tickCount = 0;
+
+// Laskee kastepisteen
+function getDewPoint(t, h) {
+    let a = 17.625; let b = 243.04;
+    let alpha = Math.log(h/100.0) + (a * t) / (b + t);
+    return (b * alpha) / (a - alpha);
+}
+
+// Muuntaa jännitteen (mV) prosenteiksi (3000mV=100%, 2400mV=0%)
+function getBatteryPercentage(mv) {
+    let min = 2400;
+    let max = 3000;
+    let pct = (mv - min) / (max - min) * 100;
+    if (pct > 100) return 100;
+    if (pct < 0) return 0;
+    return Math.floor(pct);
+}
+
+// Laskee keskiarvon (t, h, rssi, batt, batt_pct)
+function getAverage(mac) {
+    let arr = history[mac];
+    if (!arr || arr.length === 0) return null;
+    let sT=0, sH=0, sR=0, sB=0, sP=0;
+    for(let i=0; i<arr.length; i++) { 
+        sT += arr[i].temp; sH += arr[i].hum; sR += arr[i].rssi; 
+        sB += arr[i].batt; sP += arr[i].batt_pct;
+    }
+    return { temp: sT/arr.length, hum: sH/arr.length, rssi: sR/arr.length, batt: sB/arr.length, batt_pct: sP/arr.length };
+}
+
+BLE.Scanner.Start({ duration_ms: -1, active: false });
+
+BLE.Scanner.Subscribe(function (event, result) {
+    if (event !== BLE.Scanner.SCAN_RESULT) return;
+    let addr = result.addr.toLowerCase();
+    
+    if (SENSORS[addr] && result.manufacturer_data && result.manufacturer_data["0499"]) {
+        let raw = result.manufacturer_data["0499"];
+        let bytes = [];
+        for (let i = 0; i < raw.length; i++) bytes.push(raw.charCodeAt(i));
+
+        if (bytes.length >= 14 && bytes[0] === 5) {
+            let temp = (((bytes[1] << 8) | bytes[2]) / 200.0);
+            let hum = ((bytes[3] * 256) + bytes[4]) * 0.0025;
+            let batt = (((bytes[13] << 8) | bytes[14]) >> 5) + 1600;
+            let rssi = result.rssi;
+            
+            // Lasketaan prosentit
+            let batt_pct = getBatteryPercentage(batt);
+            
+            let arr = history[addr];
+            arr.push({temp: temp, hum: hum, rssi: rssi, batt: batt, batt_pct: batt_pct});
+            if (arr.length > 5) {
+                let newArr = [];
+                for (let i = 1; i < arr.length; i++) newArr.push(arr[i]);
+                history[addr] = newArr;
+            }
+        }
+    }
+});
+
+Timer.set(60000, true, function() {
+    tickCount++;
+    let crawl = getAverage("aa:bb:cc:dd:ee:ff");
+    let out = getAverage("11:22:33:44:55:66");
+
+    if (crawl && out) {
+        // Päivitetty loki: nyt näkyy myös %
+        console.log("ALAPOHJA: " + crawl.rssi.toFixed(0) + "dBm, " + crawl.batt_pct + "% | ULKO: " + out.rssi.toFixed(0) + "dBm, " + out.batt_pct + "%");
+        
+        let dpCrawl = getDewPoint(crawl.temp, crawl.hum);
+        let dpOut = getDewPoint(out.temp, out.hum);
+        let status = Shelly.getComponentStatus("switch", SWITCH_ID);
+        let isRunning = status.output;
+        
+        if ((tickCount - lastSwitchTick) < MIN_SWITCH_TICKS) return;
+
+        let shouldBeOn = (crawl.hum > HUM_LIMIT && dpOut < (dpCrawl - DEW_MARGIN));
+        let shouldBeOff = (crawl.hum < (HUM_LIMIT - HYSTERESIS) || dpOut >= dpCrawl);
+
+        if (shouldBeOn && !isRunning) {
+            Shelly.call("Switch.Set", { id: SWITCH_ID, on: true });
+            lastSwitchTick = tickCount;
+            console.log("Tuuletus PÄÄLLE. Kosteus: " + crawl.hum.toFixed(1) + "%");
+        } 
+        else if (shouldBeOff && isRunning) {
+            Shelly.call("Switch.Set", { id: SWITCH_ID, on: false });
+            lastSwitchTick = tickCount;
+            console.log("Tuuletus POIS. Kosteus: " + crawl.hum.toFixed(1) + "%");
+        }
+    }
+});
