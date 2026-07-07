@@ -4,7 +4,7 @@ This uses a Shelly plug and two Ruuvi tags to compare humidity levels and turn o
 The point is to run everything locally on one shelly device so no wifi needed.
 
 Equipment needed:
-1 x PlugS Gen3
+1 x PlugS Gen3 (with firmware version 2.x or newer)
 2 x regular Ruuvi tag with temperature and humidity sensors
 
 Sorry not sorry the comments are in ancient elf language.
