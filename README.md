@@ -8,3 +8,5 @@ Equipment needed:
 2 x regular Ruuvi tag with temperature and humidity sensors
 
 Sorry not sorry the comments are in ancient elf language.
+
+If you want to use this, all that's needed is to change the ruuvitag MAC addresses in three places.
